@@ -138,7 +138,7 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItem("Custom")
         for name, p in PRESETS.items():
-            self.preset_combo.addItem(f"{name} — {p['description']}")
+            self.preset_combo.addItem(f"{name} — {p['description']}", userData=name)
         self.preset_combo.currentIndexChanged.connect(self._apply_preset)
         preset_row.addWidget(self.preset_combo, 1)
         layout.addLayout(preset_row)
@@ -201,9 +201,9 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
             self._preview()
 
     def _apply_preset(self, index):
-        if index == 0:
+        preset_name = self.preset_combo.currentData()
+        if not preset_name or preset_name not in PRESETS:
             return
-        preset_name = list(PRESETS.keys())[index - 1]
         preset = PRESETS[preset_name]
         self.find_input.setText(preset["find"])
         self.replace_input.setText(preset["replace"])
