@@ -63,7 +63,7 @@ class MediaConverter:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 return str(target), None
-            return None, result.stderr[:200]
+            return None, result.stderr[:400]
         except FileNotFoundError:
             return None, "ffmpeg not found in PATH"
 
@@ -174,23 +174,37 @@ class ConverterWindow(QtWidgets.QMainWindow):
         target_fmt = self.format_combo.currentText()
         output_dir = self.output_input.text().strip() or None
         success = 0
-        errors = 0
+        error_details = []
 
-        for filepath in self.files:
+        for i, filepath in enumerate(self.files):
             ext = Path(filepath).suffix.lower()
             if ext in IMAGE_FORMATS and target_fmt in IMAGE_FORMATS:
                 result, err = self.converter.convert_image(filepath, target_fmt, output_dir)
-            elif ext in VIDEO_FORMATS or target_fmt in VIDEO_FORMATS:
+            elif ext in VIDEO_FORMATS and target_fmt in VIDEO_FORMATS:
                 result, err = self.converter.convert_video(filepath, target_fmt, output_dir)
             else:
-                result, err = None, "Unsupported conversion"
+                result, err = None, f"Unsupported: {ext} → {target_fmt}"
 
+            item = self.file_list.item(i)
             if result:
                 success += 1
+                if item:
+                    item.setForeground(QtGui.QColor("#00e5a0"))
             else:
-                errors += 1
+                error_details.append(f"{Path(filepath).name}: {err}")
+                if item:
+                    item.setForeground(QtGui.QColor("#ff4060"))
 
-        self.status_label.setText(f"✓ {success} converted · ✗ {errors} failed")
+        msg = f"✓ {success} converted"
+        if error_details:
+            msg += f"  ·  ✗ {len(error_details)} failed"
+        self.status_label.setText(msg)
+
+        if error_details:
+            QtWidgets.QMessageBox.warning(
+                self, "Conversion Errors",
+                "\n".join(error_details),
+            )
 
     def _apply_style(self):
         self.setStyleSheet("""
