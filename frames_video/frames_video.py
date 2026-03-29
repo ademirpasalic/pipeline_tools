@@ -43,10 +43,11 @@ class FramesVideoConverter:
             return False, "ffmpeg not found in PATH"
 
     @staticmethod
-    def video_to_frames(video_path, output_dir, format=".png", prefix="frame"):
+    def video_to_frames(video_path, output_dir, fmt=".png", prefix="frame"):
         """Extract frames from video to image sequence."""
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        output_pattern = str(Path(output_dir) / f"{prefix}_%06d{format}")
+        fmt = fmt if fmt.startswith(".") else f".{fmt}"
+        output_pattern = str(Path(output_dir) / f"{prefix}_%06d{fmt}")
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_path),
@@ -55,7 +56,7 @@ class FramesVideoConverter:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                count = len(list(Path(output_dir).glob(f"{prefix}_*{format}")))
+                count = len(list(Path(output_dir).glob(f"{prefix}_*{fmt}")))
                 return True, f"Extracted {count} frames"
             return False, result.stderr[:300]
         except FileNotFoundError:
@@ -67,7 +68,7 @@ class FramesVideoConverter:
         files = sorted(Path(directory).iterdir())
         image_files = [f for f in files if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".exr", ".tiff", ".tif")]
         if not image_files:
-            return None, 0
+            return None, "", 0
 
         # Try to detect numbering pattern
         first = image_files[0].stem
@@ -78,8 +79,8 @@ class FramesVideoConverter:
             prefix = first[:match.start()]
             ext = image_files[0].suffix
             pattern = f"{prefix}%0{padding}d{ext}"
-            return pattern, len(image_files)
-        return None, 0
+            return pattern, prefix, padding
+        return None, "", 0
 
 
 class FramesVideoWindow(QtWidgets.QMainWindow):
@@ -211,10 +212,10 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
     def _detect_pattern(self):
         directory = self.frame_dir_input.text().strip()
         if directory:
-            pattern, count = self.converter.detect_sequence(directory)
+            pattern, prefix, padding = self.converter.detect_sequence(directory)
             if pattern:
                 self.pattern_input.setText(pattern)
-                self.status_label.setText(f"Detected: {pattern} ({count} frames)")
+                self.status_label.setText(f"Detected: {pattern}")
             else:
                 self.status_label.setText("Could not detect sequence pattern")
 
