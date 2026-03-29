@@ -25,9 +25,10 @@ class VideoConcatenator:
 
     @staticmethod
     def concatenate(video_paths, output_path, include_audio=True):
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
             for path in video_paths:
-                resolved = str(Path(path).resolve()).replace("'", "'\\''")
+                # Use POSIX-style forward slashes; ffmpeg concat demuxer requires them
+                resolved = Path(path).resolve().as_posix()
                 f.write(f"file '{resolved}'\n")
             list_file = f.name
 
@@ -43,7 +44,7 @@ class VideoConcatenator:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 return True, f"Created: {output_path}"
-            return False, result.stderr[:300]
+            return False, result.stderr[:400]
         except FileNotFoundError:
             return False, "ffmpeg not found in PATH"
         finally:
@@ -75,7 +76,7 @@ class ConcatWindow(QtWidgets.QMainWindow):
         header = QtWidgets.QLabel("Video Concatenator")
         header.setObjectName("header")
         layout.addWidget(header)
-        layout.addWidget(QtWidgets.QLabel("Drag to reorder. Videos will be joined top to bottom."))
+        layout.addWidget(QtWidgets.QLabel("Drag or use ↑↓ buttons to reorder. Videos will be joined top to bottom."))
 
         # Add buttons
         btn_row = QtWidgets.QHBoxLayout()
@@ -180,6 +181,13 @@ class ConcatWindow(QtWidgets.QMainWindow):
         output = self.output_input.text().strip()
         if not output:
             return
+        # Validate all files exist before handing off to ffmpeg
+        missing = [Path(p).name for p in self.video_paths if not Path(p).exists()]
+        if missing:
+            self.status_label.setText(f"⚠ Missing: {', '.join(missing)}")
+            return
+        self.status_label.setText("Concatenating…")
+        QtWidgets.QApplication.processEvents()
         success, msg = self.concatenator.concatenate(
             self.video_paths, output, self.audio_cb.isChecked()
         )
