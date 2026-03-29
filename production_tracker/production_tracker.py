@@ -215,6 +215,15 @@ class TrackerWindow(QtWidgets.QMainWindow):
             self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(shot.get("notes", "")))
             self.table.setItem(row, 5, QtWidgets.QTableWidgetItem(shot["updated"][:16]))
 
+            color_hex = STATUS_COLORS.get(shot.get("status", ""), "")
+            if color_hex:
+                q_color = QtGui.QColor(color_hex)
+                q_color.setAlpha(60)
+                for col in range(self.table.columnCount()):
+                    cell = self.table.item(row, col)
+                    if cell:
+                        cell.setBackground(q_color)
+
         # Stats
         stats = self.db.get_stats()
         parts = [f"{stats['total']} total"]
