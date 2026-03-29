@@ -121,8 +121,12 @@ class LauncherWindow(QtWidgets.QMainWindow):
             top-level keys.
         """
         if self.config_path.exists():
-            with open(self.config_path) as f:
-                return json.load(f)
+            try:
+                with open(self.config_path) as f:
+                    return json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error("Failed to load config %s: %s — using defaults", self.config_path, e)
+                return DEFAULT_CONFIG.copy()
         logger.info("No config found at %s — writing defaults", self.config_path)
         with open(self.config_path, "w") as f:
             json.dump(DEFAULT_CONFIG, f, indent=2)
@@ -248,11 +252,16 @@ class LauncherWindow(QtWidgets.QMainWindow):
             proj_env = self.config[KEY_PROJECTS][proj_key].get(KEY_ENV, {})
             env.update(proj_env)
         sw_env = sw.get(KEY_ENV, {})
+        # Skip empty software env values to avoid overwriting project vars with blanks
         env.update({k: v for k, v in sw_env.items() if v})
 
         if not Path(exe).exists():
             logger.error("Executable not found for %s: %s", sw.get(KEY_NAME, software_key), exe)
-            self.status_label.setText(f"⚠ Executable not found: {exe}")
+            self.status_label.setText(f"⚠ Executable not found")
+            QtWidgets.QMessageBox.warning(
+                self, "Executable Not Found",
+                f"{sw.get(KEY_NAME, software_key)}\n\n{exe}\n\nUpdate the path in Edit Config (JSON).",
+            )
             return
 
         try:
@@ -261,7 +270,8 @@ class LauncherWindow(QtWidgets.QMainWindow):
             self.status_label.setText(f"✓ Launched {sw[KEY_NAME]}")
         except Exception as e:
             logger.error("Failed to launch %s: %s", sw.get(KEY_NAME, software_key), e)
-            self.status_label.setText(f"✗ Failed: {e}")
+            self.status_label.setText(f"✗ Launch failed")
+            QtWidgets.QMessageBox.critical(self, "Launch Failed", str(e))
 
     def _add_project(self) -> None:
         """Prompt the user for a new project name and add it to the config."""
@@ -275,6 +285,11 @@ class LauncherWindow(QtWidgets.QMainWindow):
             }
             self._save_config()
             self.project_combo.addItem(name, key)
+            QtWidgets.QMessageBox.information(
+                self, "Project Added",
+                f"'{name}' added.\n\nUse 'Edit Config (JSON)' to set the project root "
+                "and environment variables.",
+            )
 
     def _edit_config(self) -> None:
         """Open ``launcher_config.json`` in the platform default editor."""
