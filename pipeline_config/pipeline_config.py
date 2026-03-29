@@ -54,12 +54,21 @@ DEFAULT_PIPELINE_CONFIG = {
 class ConfigManager:
     """Core config management."""
 
-    def __init__(self):
+    def __init__(self, filepath=None):
         self.config = {}
         self.filepath = None
+        if filepath:
+            p = Path(filepath)
+            if p.exists():
+                self.load(filepath)
+            else:
+                self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
+                self.filepath = p
+        else:
+            self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
 
     def new(self):
-        self.config = DEFAULT_PIPELINE_CONFIG.copy()
+        self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
         self.filepath = None
 
     def load(self, filepath):
@@ -81,10 +90,39 @@ class ConfigManager:
             else:
                 json.dump(self.config, f, indent=2)
 
-    def resolve_path(self, template, **kwargs):
+    def get(self, dotted_key, default=None):
+        """Get a config value using dot-notation (e.g. 'pipeline.studio')."""
+        node = self.config
+        for part in dotted_key.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return default
+            node = node[part]
+        return node
+
+    def set(self, dotted_key, value):
+        """Set a config value using dot-notation (e.g. 'pipeline.studio')."""
+        parts = dotted_key.split(".")
+        node = self.config
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+
+    def resolve_path(self, dotted_key, **kwargs):
+        """Look up a path template by dotted key and resolve it with kwargs."""
+        template = self.get(dotted_key, dotted_key)
+        if not isinstance(template, str):
+            return ""
+        # Build context: seed with kwargs, then resolve config path vars in order
+        ctx = {**kwargs}
+        for k, v in self.config.get("paths", {}).items():
+            if isinstance(v, str):
+                try:
+                    ctx.setdefault(k, v.format(**ctx))
+                except (KeyError, ValueError):
+                    ctx.setdefault(k, v)
         try:
-            return template.format(**kwargs)
-        except KeyError:
+            return template.format(**ctx)
+        except (KeyError, ValueError):
             return template
 
     def validate(self):
