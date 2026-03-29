@@ -57,12 +57,6 @@ class PublishDatabase:
         self.records.append(record.to_dict())
         self.save()
 
-    def get_next_version(self, asset_name):
-        versions = [
-            r["version"] for r in self.records
-            if Path(r["source"]).stem == asset_name
-        ]
-        return max(versions, default=0) + 1
 
 
 class ScenePublisher:
@@ -72,14 +66,26 @@ class ScenePublisher:
         self.publish_root = Path(publish_root)
         self.db = PublishDatabase(self.publish_root / "publish_history.json")
 
-    def publish(self, source_path, comment="", artist=""):
+    def next_version(self, asset_name):
+        """Return the next version string (e.g. 'v001') for the given asset."""
+        asset_dir = self.publish_root / asset_name
+        if not asset_dir.exists():
+            return "v001"
+        existing = sorted(
+            d.name for d in asset_dir.iterdir()
+            if d.is_dir() and re.match(r"^v\d+$", d.name)
+        )
+        if not existing:
+            return "v001"
+        return f"v{int(existing[-1][1:]) + 1:03d}"
+
+    def publish(self, source_path, asset_name=None, comment="", artist=""):
         source = Path(source_path)
         if not source.exists():
             raise FileNotFoundError(f"Source not found: {source}")
 
-        asset_name = source.stem
-        version = self.db.get_next_version(asset_name)
-        version_str = f"v{version:03d}"
+        asset_name = asset_name or source.stem
+        version_str = self.next_version(asset_name)
 
         # Build target path: published/<asset_name>/<version>/<file>
         target_dir = self.publish_root / asset_name / version_str
@@ -92,8 +98,7 @@ class ScenePublisher:
         # Write sidecar metadata
         meta = {
             "asset": asset_name,
-            "version": version,
-            "version_string": version_str,
+            "version": version_str,
             "source": str(source.resolve()),
             "published": str(target_path),
             "artist": artist or os.environ.get("USER", "unknown"),
@@ -106,7 +111,7 @@ class ScenePublisher:
             json.dump(meta, f, indent=2)
 
         # Create publish record
-        record = PublishRecord(source, target_path, version, comment, artist)
+        record = PublishRecord(source, target_path, version_str, comment, artist)
         self.db.add(record)
         return record
 
@@ -213,7 +218,7 @@ class PublisherWindow(QtWidgets.QMainWindow):
             self._refresh_history()
             QtWidgets.QMessageBox.information(
                 self, "Published",
-                f"Published {Path(source).name} as v{record.version:03d}"
+                f"Published {Path(source).name} as {record.version}"
             )
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Error", str(e))
@@ -222,7 +227,7 @@ class PublisherWindow(QtWidgets.QMainWindow):
         self.history_table.clear()
         for r in reversed(self.publisher.db.records):
             item = QtWidgets.QTreeWidgetItem([
-                f"v{r['version']:03d}",
+                r["version"],
                 Path(r["source"]).stem,
                 r.get("artist", ""),
                 r.get("comment", ""),
