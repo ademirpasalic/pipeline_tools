@@ -62,10 +62,11 @@ class RenameEngine:
         else:
             self.files = [f for f in root.iterdir() if f.is_file()]
 
-    def preview(self, find, replace, lowercase=False, add_number=False, start_num=1, padding=3):
+    def preview(self, files=None, *, find="", replace="", lowercase=False, add_number=False, start_num=1, padding=3):
         """Return list of (old_name, new_name, full_old, full_new) tuples."""
+        source = [Path(p) for p in files] if files is not None else self.files
         results = []
-        for i, filepath in enumerate(self.files):
+        for i, filepath in enumerate(source):
             old_name = filepath.stem
             ext = filepath.suffix
 
@@ -214,10 +215,11 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
         if not self.engine.files:
             return
         results = self.engine.preview(
-            self.find_input.text(),
-            self.replace_input.text(),
-            self.lower_cb.isChecked(),
-            self.number_cb.isChecked(),
+            self.engine.files,
+            find=self.find_input.text(),
+            replace=self.replace_input.text(),
+            lowercase=self.lower_cb.isChecked(),
+            add_number=self.number_cb.isChecked(),
         )
         changes = 0
         for old, new, _, _ in results:
