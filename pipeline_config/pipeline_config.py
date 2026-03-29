@@ -7,6 +7,7 @@ Author: Ademir Pasalic
 Requirements: pip install PySide6 PyYAML
 """
 
+import copy
 import os
 import sys
 import json
@@ -62,33 +63,39 @@ class ConfigManager:
             if p.exists():
                 self.load(filepath)
             else:
-                self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
+                self.config = copy.deepcopy(DEFAULT_PIPELINE_CONFIG)
                 self.filepath = p
         else:
-            self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
+            self.config = copy.deepcopy(DEFAULT_PIPELINE_CONFIG)
 
     def new(self):
-        self.config = json.loads(json.dumps(DEFAULT_PIPELINE_CONFIG))
+        self.config = copy.deepcopy(DEFAULT_PIPELINE_CONFIG)
         self.filepath = None
 
     def load(self, filepath):
         self.filepath = Path(filepath)
-        with open(self.filepath) as f:
-            if self.filepath.suffix in (".yaml", ".yml") and HAS_YAML:
-                self.config = yaml.safe_load(f)
-            else:
-                self.config = json.load(f)
+        try:
+            with open(self.filepath) as f:
+                if self.filepath.suffix in (".yaml", ".yml") and HAS_YAML:
+                    self.config = yaml.safe_load(f)
+                else:
+                    self.config = json.load(f)
+        except OSError as e:
+            raise OSError(f"Cannot read config file: {e}") from e
 
     def save(self, filepath=None):
         path = Path(filepath) if filepath else self.filepath
         if not path:
             return
         self.filepath = path
-        with open(path, "w") as f:
-            if path.suffix in (".yaml", ".yml") and HAS_YAML:
-                yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
-            else:
-                json.dump(self.config, f, indent=2)
+        try:
+            with open(path, "w") as f:
+                if path.suffix in (".yaml", ".yml") and HAS_YAML:
+                    yaml.dump(self.config, f, default_flow_style=False, sort_keys=False)
+                else:
+                    json.dump(self.config, f, indent=2)
+        except OSError as e:
+            raise OSError(f"Cannot write config file: {e}") from e
 
     def get(self, dotted_key, default=None):
         """Get a config value using dot-notation (e.g. 'pipeline.studio')."""
@@ -143,6 +150,7 @@ class ConfigWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.manager = ConfigManager()
         self.manager.new()
+        self._dirty = False
         self.setWindowTitle("Pipeline Config Manager")
         self.setMinimumSize(900, 600)
         self._build_ui()
@@ -212,7 +220,7 @@ class ConfigWindow(QtWidgets.QMainWindow):
 
     def _display_config(self):
         self.tree.clear()
-        self._add_dict_to_tree(self.config, self.tree.invisibleRootItem())
+        self._add_dict_to_tree(self.manager.config, self.tree.invisibleRootItem())
         self.tree.expandAll()
         self._update_editor()
 
@@ -243,10 +251,11 @@ class ConfigWindow(QtWidgets.QMainWindow):
                 self.manager.config = yaml.safe_load(text)
             else:
                 self.manager.config = json.loads(text)
+            self._dirty = True
             self._display_config()
             self.status_label.setText("✓ Editor changes applied")
         except Exception as e:
-            self.status_label.setText(f"✗ Parse error: {e}")
+            QtWidgets.QMessageBox.warning(self, "Parse Error", f"Could not parse editor content:\n{e}")
 
     def _on_tree_click(self, item, col):
         path_parts = []
@@ -256,23 +265,53 @@ class ConfigWindow(QtWidgets.QMainWindow):
             current = current.parent()
         self.status_label.setText(" → ".join(path_parts))
 
+    def _confirm_discard(self):
+        """Return True if it's safe to discard unsaved changes."""
+        if not self._dirty:
+            return True
+        reply = QtWidgets.QMessageBox.question(
+            self, "Unsaved Changes",
+            "You have unsaved changes. Discard them?",
+            QtWidgets.QMessageBox.Discard | QtWidgets.QMessageBox.Cancel,
+        )
+        return reply == QtWidgets.QMessageBox.Discard
+
+    def closeEvent(self, event):
+        if self._confirm_discard():
+            event.accept()
+        else:
+            event.ignore()
+
     def _new(self):
+        if not self._confirm_discard():
+            return
         self.manager.new()
+        self._dirty = False
         self._display_config()
         self.status_label.setText("New config created")
 
     def _open(self):
+        if not self._confirm_discard():
+            return
         filters = "Config files (*.json *.yaml *.yml);;All files (*)"
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open Config", "", filters)
         if path:
-            self.manager.load(path)
-            self._display_config()
-            self.status_label.setText(f"Loaded: {path}")
+            try:
+                self.manager.load(path)
+                self._dirty = False
+                self._display_config()
+                self.status_label.setText(f"Loaded: {path}")
+            except OSError as e:
+                QtWidgets.QMessageBox.warning(self, "Open Failed", str(e))
 
     def _save(self):
         if self.manager.filepath:
-            self.manager.save()
-            self.status_label.setText(f"Saved: {self.manager.filepath}")
+            try:
+                self.manager.save()
+                self._dirty = False
+                self.status_label.setText(f"Saved: {self.manager.filepath}")
+            except OSError as e:
+                QtWidgets.QMessageBox.warning(self, "Save Failed", str(e))
         else:
             self._save_as()
 
@@ -280,8 +319,12 @@ class ConfigWindow(QtWidgets.QMainWindow):
         filters = "JSON (*.json);;YAML (*.yaml);;All files (*)"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Config", "pipeline_config.json", filters)
         if path:
-            self.manager.save(path)
-            self.status_label.setText(f"Saved: {path}")
+            try:
+                self.manager.save(path)
+                self._dirty = False
+                self.status_label.setText(f"Saved: {path}")
+            except OSError as e:
+                QtWidgets.QMessageBox.warning(self, "Save Failed", str(e))
 
     def _validate(self):
         errors = self.manager.validate()
@@ -307,15 +350,6 @@ class ConfigWindow(QtWidgets.QMainWindow):
             QHeaderView::section { background: #12121e; border: 1px solid #1e1e30; padding: 6px; color: #00e5a0; font-weight: bold; }
             QSplitter::handle { background: #1e1e30; width: 2px; }
         """)
-
-    @property
-    def config(self):
-        return self.manager.config
-
-    @config.setter
-    def config(self, value):
-        self.manager.config = value
-
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
