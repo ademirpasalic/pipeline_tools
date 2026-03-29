@@ -7,7 +7,6 @@ Author: Ademir Pasalic
 Requirements: pip install PySide6
 """
 
-import os
 import sys
 import json
 import shutil
@@ -19,6 +18,13 @@ try:
     from PySide6 import QtWidgets, QtCore, QtGui
 except ImportError:
     from PyQt5 import QtWidgets, QtCore, QtGui
+
+
+def _format_size(size):
+    """Return a human-readable file size string."""
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 class FileCollector:
@@ -52,31 +58,30 @@ class FileCollector:
                 errors.append(f"Not found: {filepath}")
                 continue
 
-            if flatten:
-                dest = output / src.name
-            else:
-                dest = output / category / src.name
-
+            dest = output / src.name if flatten else output / category / src.name
             dest.parent.mkdir(parents=True, exist_ok=True)
 
-            # Handle duplicates
+            # Handle name collisions
             if dest.exists():
-                stem = dest.stem
-                ext = dest.suffix
-                counter = 1
+                stem, ext, counter = dest.stem, dest.suffix, 1
                 while dest.exists():
                     dest = dest.parent / f"{stem}_{counter}{ext}"
                     counter += 1
 
-            shutil.copy2(src, dest)
-            file_hash = self._md5(dest)
-            collected.append({
+            try:
+                shutil.copy2(src, dest)
+            except OSError as e:
+                errors.append(f"Copy failed ({src.name}): {e}")
+                continue
+
+            entry = {
                 "source": str(src),
                 "destination": str(dest.relative_to(output)),
                 "category": category,
                 "size": dest.stat().st_size,
-                "md5": file_hash,
-            })
+                "md5": self._md5(dest) if create_manifest else "",
+            }
+            collected.append(entry)
 
         manifest_path = output / "delivery_manifest.json"
         if create_manifest:
@@ -88,8 +93,11 @@ class FileCollector:
                 "files": collected,
                 "errors": errors,
             }
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f, indent=2)
+            try:
+                with open(manifest_path, "w") as f:
+                    json.dump(manifest, f, indent=2)
+            except OSError as e:
+                errors.append(f"Manifest write failed: {e}")
 
         return str(manifest_path), errors
 
@@ -128,8 +136,8 @@ class CollectorWindow(QtWidgets.QMainWindow):
         # Add controls
         add_row = QtWidgets.QHBoxLayout()
         self.category_input = QtWidgets.QLineEdit("general")
-        self.category_input.setPlaceholderText("Category")
-        self.category_input.setMaximumWidth(150)
+        self.category_input.setPlaceholderText("Category (= output subfolder)")
+        self.category_input.setMaximumWidth(200)
         add_files_btn = QtWidgets.QPushButton("+ Add Files")
         add_files_btn.clicked.connect(self._add_files)
         add_dir_btn = QtWidgets.QPushButton("+ Add Directory")
@@ -190,9 +198,9 @@ class CollectorWindow(QtWidgets.QMainWindow):
         category = self.category_input.text().strip() or "general"
         for f in files:
             self.collector.add_file(f, category)
-            size = Path(f).stat().st_size
-            size_str = f"{size / 1024:.1f} KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MB"
-            item = QtWidgets.QTreeWidgetItem([Path(f).name, category, size_str, f])
+            item = QtWidgets.QTreeWidgetItem([
+                Path(f).name, category, _format_size(Path(f).stat().st_size), f
+            ])
             self.table.addTopLevelItem(item)
         self._update_status()
 
@@ -203,9 +211,9 @@ class CollectorWindow(QtWidgets.QMainWindow):
             for f in Path(directory).rglob("*"):
                 if f.is_file():
                     self.collector.add_file(str(f), category)
-                    size = f.stat().st_size
-                    size_str = f"{size / 1024:.1f} KB" if size < 1024 * 1024 else f"{size / (1024 * 1024):.1f} MB"
-                    item = QtWidgets.QTreeWidgetItem([f.name, category, size_str, str(f)])
+                    item = QtWidgets.QTreeWidgetItem([
+                        f.name, category, _format_size(f.stat().st_size), str(f)
+                    ])
                     self.table.addTopLevelItem(item)
             self._update_status()
 
@@ -221,18 +229,25 @@ class CollectorWindow(QtWidgets.QMainWindow):
 
     def _collect(self):
         output = self.output_input.text().strip()
-        if not output or not self.collector.sources:
+        if not output:
+            self.status_label.setText("⚠ Select a delivery folder first")
+            return
+        if not self.collector.sources:
+            self.status_label.setText("⚠ No files queued — add files or a directory first")
             return
         manifest_path, errors = self.collector.collect(
             output,
             flatten=self.flatten_cb.isChecked(),
             create_manifest=self.manifest_cb.isChecked(),
         )
-        count = len(self.collector.sources)
-        self.status_label.setText(
-            f"✓ Collected {count} files"
-            + (f" · {len(errors)} errors" if errors else "")
-        )
+        count = len(self.collector.sources) - len(errors)
+        msg = f"✓ Collected {count} files → {output}"
+        if self.manifest_cb.isChecked():
+            msg += "  ·  manifest written"
+        if errors:
+            msg += f"  ·  ⚠ {len(errors)} errors"
+            QtWidgets.QMessageBox.warning(self, "Collection errors", "\n".join(errors))
+        self.status_label.setText(msg)
 
     def _update_status(self):
         self.status_label.setText(f"{len(self.collector.sources)} files queued")
