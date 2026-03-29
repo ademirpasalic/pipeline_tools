@@ -7,7 +7,6 @@ Author: Ademir Pasalic
 Requirements: pip install PySide6
 """
 
-import os
 import re
 import sys
 import json
@@ -20,6 +19,12 @@ try:
 except ImportError:
     from PyQt5 import QtWidgets, QtCore, QtGui
 
+
+# Status colors for the results table
+COLOR_PENDING  = "#ffc040"
+COLOR_PREVIEW  = "#40a0ff"
+COLOR_INGESTED = "#00e5a0"
+COLOR_ERROR    = "#ff4060"
 
 INGEST_RULES = {
     "image": {
@@ -48,6 +53,19 @@ INGEST_RULES = {
     },
 }
 
+# Base fields present on every log entry regardless of status
+_BASE_ENTRY = {
+    "source": "",
+    "original_name": "",
+    "category": "",
+    "target": "",
+    "new_name": "",
+    "size": 0,
+    "timestamp": "",
+    "status": "",
+    "message": "",
+}
+
 
 class FileIngestor:
     """Core ingest engine."""
@@ -73,18 +91,31 @@ class FileIngestor:
 
         for filepath in filepaths:
             src = Path(filepath)
+            ts = datetime.now().isoformat()
+
             if not src.exists():
-                self.log.append({"status": "error", "file": str(src), "message": "File not found"})
+                entry = {**_BASE_ENTRY,
+                         "source": str(src), "original_name": src.name,
+                         "timestamp": ts, "status": "error",
+                         "message": "File not found"}
+                self.log.append(entry)
+                results.append(entry)
                 continue
 
             target_folder = self.classify(filepath)
             target_dir = root / target_folder
 
-            # Rename if pattern provided
             if rename_pattern:
-                new_name = self._apply_rename(src.name, rename_pattern, len(results) + 1)
+                new_name, err = self._apply_rename(src.name, rename_pattern, len(results) + 1)
+                if err:
+                    entry = {**_BASE_ENTRY,
+                             "source": str(src), "original_name": src.name,
+                             "category": target_folder, "timestamp": ts,
+                             "status": "error", "message": err}
+                    self.log.append(entry)
+                    results.append(entry)
+                    continue
             else:
-                # Clean filename
                 new_name = re.sub(r"[^\w\.\-]", "_", src.name)
                 new_name = re.sub(r"_+", "_", new_name)
 
@@ -92,27 +123,28 @@ class FileIngestor:
 
             # Handle duplicates
             if target_path.exists():
-                stem = target_path.stem
-                ext = target_path.suffix
-                counter = 1
+                stem, ext, counter = target_path.stem, target_path.suffix, 1
                 while target_path.exists():
                     target_path = target_dir / f"{stem}_{counter}{ext}"
                     counter += 1
 
-            entry = {
-                "source": str(src),
-                "target": str(target_path),
-                "category": target_folder,
-                "original_name": src.name,
-                "new_name": target_path.name,
-                "size": src.stat().st_size,
-                "timestamp": datetime.now().isoformat(),
-            }
+            entry = {**_BASE_ENTRY,
+                     "source": str(src),
+                     "target": str(target_path),
+                     "category": target_folder,
+                     "original_name": src.name,
+                     "new_name": target_path.name,
+                     "size": src.stat().st_size,
+                     "timestamp": ts}
 
             if not dry_run:
                 target_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, target_path)
-                entry["status"] = "ingested"
+                try:
+                    shutil.copy2(src, target_path)
+                    entry["status"] = "ingested"
+                except OSError as e:
+                    entry["status"] = "error"
+                    entry["message"] = str(e)
             else:
                 entry["status"] = "preview"
 
@@ -132,9 +164,14 @@ class FileIngestor:
 
     @staticmethod
     def _apply_rename(filename, pattern, index):
+        """Apply a format-string rename pattern. Returns (new_name, error_or_None)."""
         stem = Path(filename).stem
         ext = Path(filename).suffix
-        return pattern.format(name=stem, ext=ext, index=index, i=f"{index:04d}")
+        try:
+            return pattern.format(name=stem, ext=ext, index=index, i=f"{index:04d}"), None
+        except KeyError as e:
+            valid = "{name}, {ext}, {index}, {i}"
+            return filename, f"Unknown variable {e} in pattern — valid: {valid}"
 
 
 class IngestorWindow(QtWidgets.QMainWindow):
@@ -245,42 +282,58 @@ class IngestorWindow(QtWidgets.QMainWindow):
         self.table.clear()
         for f in self.pending_files:
             cat = self.ingestor.classify(f)
-            item = QtWidgets.QTreeWidgetItem([Path(f).name, cat, "—", "pending"])
-            item.setForeground(3, QtGui.QBrush(QtGui.QColor("#ffc040")))
+            item = QtWidgets.QTreeWidgetItem([Path(f).name, cat, "—", "queued"])
+            item.setForeground(3, QtGui.QBrush(QtGui.QColor(COLOR_PENDING)))
             self.table.addTopLevelItem(item)
-        self.status_label.setText(f"{len(self.pending_files)} files pending")
+        self.status_label.setText(f"{len(self.pending_files)} files queued")
+
+    def _check_ready(self):
+        """Return root if ready, else show status message and return None."""
+        root = self.root_input.text().strip()
+        if not root:
+            self.status_label.setText("⚠ Select a project root first")
+            return None
+        if not self.pending_files:
+            self.status_label.setText("⚠ No files queued — add files or a directory first")
+            return None
+        return root
 
     def _preview(self):
-        root = self.root_input.text().strip()
-        if not root or not self.pending_files:
+        root = self._check_ready()
+        if not root:
             return
         pattern = self.rename_input.text().strip() or None
         results = self.ingestor.ingest(self.pending_files, root, pattern, dry_run=True)
         self.table.clear()
         for r in results:
+            color = COLOR_ERROR if r["status"] == "error" else COLOR_PREVIEW
             item = QtWidgets.QTreeWidgetItem([
-                r["original_name"], r["category"], r["target"], "preview"
+                r["original_name"], r["category"], r["target"], r["status"]
             ])
-            item.setForeground(3, QtGui.QBrush(QtGui.QColor("#40a0ff")))
+            item.setForeground(3, QtGui.QBrush(QtGui.QColor(color)))
             self.table.addTopLevelItem(item)
-        self.status_label.setText(f"Preview: {len(results)} files will be ingested")
+        self.status_label.setText(f"Preview: {len(results)} files")
 
     def _ingest(self):
-        root = self.root_input.text().strip()
-        if not root or not self.pending_files:
+        root = self._check_ready()
+        if not root:
             return
         pattern = self.rename_input.text().strip() or None
         results = self.ingestor.ingest(self.pending_files, root, pattern, dry_run=False)
         self.table.clear()
         for r in results:
+            color = COLOR_INGESTED if r["status"] == "ingested" else COLOR_ERROR
             item = QtWidgets.QTreeWidgetItem([
                 r["original_name"], r["category"], r["target"], r["status"]
             ])
-            color = "#00e5a0" if r["status"] == "ingested" else "#ff4060"
             item.setForeground(3, QtGui.QBrush(QtGui.QColor(color)))
             self.table.addTopLevelItem(item)
         ingested = sum(1 for r in results if r["status"] == "ingested")
-        self.status_label.setText(f"✓ Ingested {ingested}/{len(results)} files")
+        errors = sum(1 for r in results if r["status"] == "error")
+        msg = f"✓ Ingested {ingested}/{len(results)} files"
+        if errors:
+            msg += f"  ·  ⚠ {errors} errors"
+        self.status_label.setText(msg)
         self.pending_files = []
 
     def _apply_style(self):
