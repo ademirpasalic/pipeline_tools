@@ -131,21 +131,30 @@
 <script>
   var events = [];
   var sources = new Set();
-  
+  var MAX_EVENTS = 1000;
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function formatTime(iso) {
     var d = new Date(iso);
     return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
   }
-  
+
   function renderEvent(e) {
-    var dataStr = Object.keys(e.data).length > 0 ? JSON.stringify(e.data) : '';
+    var dataStr = Object.keys(e.data).length > 0 ? escHtml(JSON.stringify(e.data)) : '';
     return '<div class="event">' +
       '<div class="event-time">' + formatTime(e.timestamp) + '</div>' +
-      '<div class="event-source">' + e.source + '</div>' +
-      '<div><div class="event-name">' + e.event + '</div>' +
+      '<div class="event-source">' + escHtml(e.source) + '</div>' +
+      '<div><div class="event-name">' + escHtml(e.event) + '</div>' +
         (dataStr ? '<div class="event-data">' + dataStr + '</div>' : '') +
       '</div>' +
-      '<div class="severity-badge severity-' + e.severity + '">' + e.severity + '</div>' +
+      '<div class="severity-badge severity-' + escHtml(e.severity) + '">' + escHtml(e.severity) + '</div>' +
     '</div>';
   }
   
@@ -199,25 +208,33 @@
   es.onmessage = function(msg) {
     var e = JSON.parse(msg.data);
     events.unshift(e);
+    if (events.length > MAX_EVENTS) events.pop();
     sources.add(e.source);
     document.getElementById('empty').style.display = 'none';
     updateSourceFilter();
     updateStats();
     render();
   };
+
+  window.addEventListener('beforeunload', function() { es.close(); });
   
   document.getElementById('f-search').addEventListener('input', render);
   document.getElementById('f-severity').addEventListener('change', render);
   document.getElementById('f-source').addEventListener('change', render);
   
   // Load existing events
-  fetch('/api/events').then(function(r) { return r.json(); }).then(function(data) {
+  fetch('/api/events').then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function(data) {
     events = data;
     data.forEach(function(e) { sources.add(e.source); });
     if (events.length > 0) document.getElementById('empty').style.display = 'none';
     updateSourceFilter();
     updateStats();
     render();
+  }).catch(function(err) {
+    document.getElementById('empty').textContent = 'Failed to load events: ' + err.message;
   });
 </script>
 </body>

@@ -67,13 +67,19 @@ class EventStore {
   private listeners: Set<(event: PipelineEvent) => void> = new Set();
 
   add(payload: WebhookPayload): PipelineEvent {
+    // Cap data payload to avoid memory bloat from oversized objects
+    let data = payload.data || {};
+    if (JSON.stringify(data).length > 10_000) {
+      data = { _truncated: true, reason: "payload exceeded 10KB" };
+    }
+
     const event: PipelineEvent = {
       id: this.generateId(),
       timestamp: new Date().toISOString(),
       source: payload.source || "unknown",
       event: payload.event || "unnamed",
       severity: this.classifySeverity(payload),
-      data: payload.data || {},
+      data,
     };
 
     this.events.unshift(event);
@@ -155,8 +161,13 @@ app.use(express.json());
 app.post("/api/webhook", (req: Request, res: Response) => {
   const payload = req.body as WebhookPayload;
 
-  if (!payload.source || !payload.event) {
+  if (!payload.source?.trim() || !payload.event?.trim()) {
     res.status(400).json({ error: "Missing required fields: source, event" });
+    return;
+  }
+
+  if (payload.source.length > 100 || payload.event.length > 200) {
+    res.status(400).json({ error: "Field length exceeded (source: 100, event: 200)" });
     return;
   }
 
@@ -188,10 +199,14 @@ app.get("/api/stream", (req: Request, res: Response) => {
   res.flushHeaders();
 
   const unsubscribe = store.subscribe((event: PipelineEvent) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    // res.write() returns false on backpressure/closed connection
+    if (!res.write(`data: ${JSON.stringify(event)}\n\n`)) {
+      unsubscribe();
+    }
   });
 
   req.on("close", unsubscribe);
+  req.on("error", unsubscribe);
 });
 
 // ── Dashboard ──
