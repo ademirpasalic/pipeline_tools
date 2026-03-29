@@ -58,11 +58,11 @@ class FileIngestor:
         self.log = []
 
     def classify(self, filepath):
-        """Determine file category based on extension."""
+        """Return the target folder name for a file based on its extension."""
         ext = Path(filepath).suffix.lower()
-        for category, rule in self.rules.items():
+        for rule in self.rules.values():
             if ext in rule["extensions"]:
-                return category
+                return rule["target_folder"]
         return "other"
 
     def ingest(self, filepaths, project_root=None, rename_pattern=None, dry_run=False):
@@ -77,8 +77,7 @@ class FileIngestor:
                 self.log.append({"status": "error", "file": str(src), "message": "File not found"})
                 continue
 
-            category = self.classify(filepath)
-            target_folder = self.rules.get(category, {}).get("target_folder", "other")
+            target_folder = self.classify(filepath)
             target_dir = root / target_folder
 
             # Rename if pattern provided
@@ -103,7 +102,7 @@ class FileIngestor:
             entry = {
                 "source": str(src),
                 "target": str(target_path),
-                "category": category,
+                "category": target_folder,
                 "original_name": src.name,
                 "new_name": target_path.name,
                 "size": src.stat().st_size,
