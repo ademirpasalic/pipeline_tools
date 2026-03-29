@@ -7,7 +7,6 @@ Author: Ademir Pasalic
 Requirements: pip install PySide6
 """
 
-import os
 import re
 import sys
 from pathlib import Path
@@ -17,6 +16,11 @@ try:
 except ImportError:
     from PyQt5 import QtWidgets, QtCore, QtGui
 
+
+# Status colors for the preview table
+COLOR_CHANGED   = "#00e5a0"
+COLOR_UNCHANGED = "#4a4a5e"
+COLOR_ERROR     = "#ff4060"
 
 PRESETS = {
     "lowercase_snake": {
@@ -57,14 +61,22 @@ class RenameEngine:
 
     def load_directory(self, directory, recursive=False):
         root = Path(directory)
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {directory}")
         if recursive:
             self.files = [f for f in root.rglob("*") if f.is_file()]
         else:
             self.files = [f for f in root.iterdir() if f.is_file()]
 
     def preview(self, files=None, *, find="", replace="", lowercase=False, add_number=False, start_num=1, padding=3):
-        """Return list of (old_name, new_name, full_old, full_new) tuples."""
+        """Return list of (old_name, new_name, full_old, full_new) tuples.
+
+        Raises re.error if find is an invalid regex pattern.
+        """
         source = [Path(p) for p in files] if files is not None else self.files
+        # Validate regex early so callers get a clear error
+        if find:
+            re.compile(find)
         results = []
         for i, filepath in enumerate(source):
             old_name = filepath.stem
@@ -87,13 +99,17 @@ class RenameEngine:
         return results
 
     def apply(self, preview_results):
-        """Execute the rename."""
+        """Execute the rename. Returns (renamed, errors) where errors is a list of (name, reason) tuples."""
         renamed = []
+        errors = []
         for old_name, new_name, old_path, new_path in preview_results:
             if old_path != new_path:
-                os.rename(old_path, new_path)
-                renamed.append((old_name, new_name))
-        return renamed
+                try:
+                    Path(old_path).rename(new_path)
+                    renamed.append((old_name, new_name))
+                except OSError as e:
+                    errors.append((old_name, str(e)))
+        return renamed, errors
 
 
 class BatchRenamerWindow(QtWidgets.QMainWindow):
@@ -102,6 +118,11 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.engine = RenameEngine()
+        self._last_preview = []
+        self._preview_timer = QtCore.QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(300)
+        self._preview_timer.timeout.connect(self._preview)
         self.setWindowTitle("Batch Renamer")
         self.setMinimumSize(900, 600)
         self._build_ui()
@@ -149,12 +170,12 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
         find_row.addWidget(QtWidgets.QLabel("Find (regex):"))
         self.find_input = QtWidgets.QLineEdit()
         self.find_input.setPlaceholderText(r"e.g. [\s]+")
-        self.find_input.textChanged.connect(self._preview)
+        self.find_input.textChanged.connect(self._schedule_preview)
         find_row.addWidget(self.find_input, 1)
         find_row.addWidget(QtWidgets.QLabel("Replace:"))
         self.replace_input = QtWidgets.QLineEdit()
         self.replace_input.setPlaceholderText("e.g. _")
-        self.replace_input.textChanged.connect(self._preview)
+        self.replace_input.textChanged.connect(self._schedule_preview)
         find_row.addWidget(self.replace_input, 1)
         layout.addLayout(find_row)
 
@@ -196,10 +217,17 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
 
     def _load(self):
         path = self.dir_input.text().strip()
-        if path:
+        if not path:
+            self.status_label.setText("⚠ No directory selected")
+            return
+        try:
             self.engine.load_directory(path, self.recursive_cb.isChecked())
             self.status_label.setText(f"Loaded {len(self.engine.files)} files")
             self._preview()
+        except NotADirectoryError:
+            self.status_label.setText(f"⚠ Not a valid directory: {path}")
+        except OSError as e:
+            self.status_label.setText(f"⚠ Could not load: {e}")
 
     def _apply_preset(self, index):
         preset_name = self.preset_combo.currentData()
@@ -210,39 +238,53 @@ class BatchRenamerWindow(QtWidgets.QMainWindow):
         self.replace_input.setText(preset["replace"])
         self.lower_cb.setChecked(preset["lowercase"])
 
+    def _schedule_preview(self):
+        self._preview_timer.start()
+
     def _preview(self):
         self.table.clear()
         if not self.engine.files:
             return
-        results = self.engine.preview(
-            self.engine.files,
-            find=self.find_input.text(),
-            replace=self.replace_input.text(),
-            lowercase=self.lower_cb.isChecked(),
-            add_number=self.number_cb.isChecked(),
-        )
+        try:
+            results = self.engine.preview(
+                self.engine.files,
+                find=self.find_input.text(),
+                replace=self.replace_input.text(),
+                lowercase=self.lower_cb.isChecked(),
+                add_number=self.number_cb.isChecked(),
+            )
+        except re.error as e:
+            self.status_label.setText(f"⚠ Invalid regex: {e}")
+            self._last_preview = []
+            return
+
         changes = 0
         for old, new, _, _ in results:
             item = QtWidgets.QTreeWidgetItem([old, "→", new])
             if old != new:
-                item.setForeground(2, QtGui.QBrush(QtGui.QColor("#00e5a0")))
+                item.setForeground(2, QtGui.QBrush(QtGui.QColor(COLOR_CHANGED)))
                 changes += 1
             else:
-                item.setForeground(2, QtGui.QBrush(QtGui.QColor("#4a4a5e")))
+                item.setForeground(2, QtGui.QBrush(QtGui.QColor(COLOR_UNCHANGED)))
             self.table.addTopLevelItem(item)
         self.status_label.setText(f"{changes} files will be renamed")
         self._last_preview = results
 
     def _apply(self):
-        if not hasattr(self, "_last_preview"):
+        if not self._last_preview:
             return
         confirm = QtWidgets.QMessageBox.question(
             self, "Confirm", "Apply rename to all files?",
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
         )
         if confirm == QtWidgets.QMessageBox.Yes:
-            renamed = self.engine.apply(self._last_preview)
-            self.status_label.setText(f"✓ Renamed {len(renamed)} files")
+            renamed, errors = self.engine.apply(self._last_preview)
+            msg = f"✓ Renamed {len(renamed)} files"
+            if errors:
+                msg += f"  ·  ⚠ {len(errors)} failed"
+                details = "\n".join(f"{n}: {r}" for n, r in errors)
+                QtWidgets.QMessageBox.warning(self, "Some renames failed", details)
+            self.status_label.setText(msg)
             self._load()
 
     def _apply_style(self):
