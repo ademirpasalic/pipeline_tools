@@ -8,7 +8,6 @@ Requirements: pip install PySide6
 Optional: ffmpeg in PATH
 """
 
-import os
 import re
 import sys
 import subprocess
@@ -20,12 +19,22 @@ except ImportError:
     from PyQt5 import QtWidgets, QtCore, QtGui
 
 
+# Formats recognised as image sequences
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".exr", ".tiff", ".tif")
+
+# Video formats shown in the extract-frames combobox and file dialog filter
+VIDEO_FORMATS = ("mov", "mp4", "avi", "mkv")
+
+# Maximum characters of ffmpeg stderr to surface to the user
+MAX_FFMPEG_ERROR = 400
+
+
 class FramesVideoConverter:
     """Core conversion engine using ffmpeg."""
 
     @staticmethod
     def frames_to_video(frame_dir, pattern, output_path, fps=24, codec="libx264", crf=18):
-        """Convert image sequence to video. Pattern: e.g. 'frame_%04d.png'"""
+        """Convert image sequence to video. Pattern uses ffmpeg syntax e.g. 'frame_%04d.png'."""
         input_pattern = str(Path(frame_dir) / pattern)
         cmd = [
             "ffmpeg", "-y",
@@ -38,15 +47,18 @@ class FramesVideoConverter:
         ]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
-            return result.returncode == 0, result.stderr[:300] if result.returncode != 0 else ""
+            return result.returncode == 0, result.stderr[:MAX_FFMPEG_ERROR] if result.returncode != 0 else ""
         except FileNotFoundError:
             return False, "ffmpeg not found in PATH"
 
     @staticmethod
     def video_to_frames(video_path, output_dir, fmt=".png", prefix="frame"):
         """Extract frames from video to image sequence."""
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
         fmt = fmt if fmt.startswith(".") else f".{fmt}"
+        try:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return False, f"Cannot create output directory: {e}"
         output_pattern = str(Path(output_dir) / f"{prefix}_%06d{fmt}")
         cmd = [
             "ffmpeg", "-y",
@@ -58,24 +70,26 @@ class FramesVideoConverter:
             if result.returncode == 0:
                 count = len(list(Path(output_dir).glob(f"{prefix}_*{fmt}")))
                 return True, f"Extracted {count} frames"
-            return False, result.stderr[:300]
+            return False, result.stderr[:MAX_FFMPEG_ERROR]
         except FileNotFoundError:
             return False, "ffmpeg not found in PATH"
 
     @staticmethod
     def detect_sequence(directory):
-        """Auto-detect image sequence pattern in a directory."""
+        """Auto-detect image sequence pattern in a directory.
+
+        Returns (pattern, prefix, padding) where pattern uses ffmpeg %0Nd syntax.
+        Returns (None, '', 0) if no numbered image sequence is found.
+        """
         files = sorted(Path(directory).iterdir())
-        image_files = [f for f in files if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".exr", ".tiff", ".tif")]
+        image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
         if not image_files:
             return None, "", 0
 
-        # Try to detect numbering pattern
         first = image_files[0].stem
         match = re.search(r"(\d+)$", first)
         if match:
-            num_str = match.group(1)
-            padding = len(num_str)
+            padding = len(match.group(1))
             prefix = first[:match.start()]
             ext = image_files[0].suffix
             pattern = f"{prefix}%0{padding}d{ext}"
@@ -175,7 +189,7 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
         row5.addWidget(browse3)
         row5.addWidget(QtWidgets.QLabel("Format:"))
         self.v2f_format = QtWidgets.QComboBox()
-        self.v2f_format.addItems([".png", ".jpg", ".exr", ".tiff"])
+        self.v2f_format.addItems([f".{ext}" for ext in ("png", "jpg", "exr", "tiff")])
         row5.addWidget(self.v2f_format)
         v2f_layout.addLayout(row5)
 
@@ -200,7 +214,8 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
             self._detect_pattern()
 
     def _browse_video(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Video", "", "Video (*.mov *.mp4 *.avi *.mkv)")
+        video_filter = "Video (" + " ".join(f"*.{f}" for f in VIDEO_FORMATS) + ")"
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Video", "", video_filter)
         if path:
             self.video_input.setText(path)
 
@@ -211,13 +226,22 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
 
     def _detect_pattern(self):
         directory = self.frame_dir_input.text().strip()
-        if directory:
-            pattern, prefix, padding = self.converter.detect_sequence(directory)
-            if pattern:
-                self.pattern_input.setText(pattern)
-                self.status_label.setText(f"Detected: {pattern}")
-            else:
-                self.status_label.setText("Could not detect sequence pattern")
+        if not directory:
+            return
+        files = list(Path(directory).iterdir()) if Path(directory).is_dir() else []
+        image_files = [f for f in files if f.suffix.lower() in IMAGE_EXTENSIONS]
+        if not image_files:
+            self.status_label.setText("⚠ No image files found in directory")
+            return
+        pattern, prefix, padding = self.converter.detect_sequence(directory)
+        if pattern:
+            self.pattern_input.setText(pattern)
+            self.status_label.setText(f"Detected: {pattern} ({len(image_files)} files)")
+        else:
+            self.status_label.setText(
+                f"⚠ Found {len(image_files)} image files but no numbered sequence — "
+                "ensure filenames end with digits (e.g. frame_001.png)"
+            )
 
     def _frames_to_video(self):
         frame_dir = self.frame_dir_input.text().strip()
@@ -226,8 +250,10 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
         if not all([frame_dir, pattern, output]):
             self.status_label.setText("⚠ Fill in all fields")
             return
-        if not output.startswith("/") and not output.startswith("\\") and ":" not in output:
+        if not Path(output).is_absolute():
             output = str(Path(frame_dir) / output)
+        self.status_label.setText("Converting…")
+        QtWidgets.QApplication.processEvents()
         success, msg = self.converter.frames_to_video(frame_dir, pattern, output, self.fps_spin.value())
         self.status_label.setText(f"✓ Video created: {output}" if success else f"✗ {msg}")
 
@@ -238,6 +264,8 @@ class FramesVideoWindow(QtWidgets.QMainWindow):
         if not all([video, output_dir]):
             self.status_label.setText("⚠ Fill in all fields")
             return
+        self.status_label.setText("Extracting frames…")
+        QtWidgets.QApplication.processEvents()
         success, msg = self.converter.video_to_frames(video, output_dir, fmt)
         self.status_label.setText(f"✓ {msg}" if success else f"✗ {msg}")
 
