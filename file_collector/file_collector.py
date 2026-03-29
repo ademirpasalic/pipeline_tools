@@ -78,22 +78,20 @@ class FileCollector:
                 "md5": file_hash,
             })
 
+        manifest_path = output / "delivery_manifest.json"
         if create_manifest:
             manifest = {
-                "delivery": {
-                    "created": datetime.now().isoformat(),
-                    "total_files": len(collected),
-                    "total_size": sum(f["size"] for f in collected),
-                    "errors": len(errors),
-                },
+                "created": datetime.now().isoformat(),
+                "total_files": len(collected),
+                "total_size": sum(f["size"] for f in collected),
+                "error_count": len(errors),
                 "files": collected,
                 "errors": errors,
             }
-            manifest_path = output / "delivery_manifest.json"
             with open(manifest_path, "w") as f:
                 json.dump(manifest, f, indent=2)
 
-        return collected, errors
+        return str(manifest_path), errors
 
     @staticmethod
     def _md5(filepath):
@@ -225,15 +223,14 @@ class CollectorWindow(QtWidgets.QMainWindow):
         output = self.output_input.text().strip()
         if not output or not self.collector.sources:
             return
-        collected, errors = self.collector.collect(
+        manifest_path, errors = self.collector.collect(
             output,
             flatten=self.flatten_cb.isChecked(),
             create_manifest=self.manifest_cb.isChecked(),
         )
-        total_size = sum(f["size"] for f in collected)
-        size_str = f"{total_size / (1024 * 1024):.1f} MB"
+        count = len(self.collector.sources)
         self.status_label.setText(
-            f"✓ Collected {len(collected)} files ({size_str})"
+            f"✓ Collected {count} files"
             + (f" · {len(errors)} errors" if errors else "")
         )
 
