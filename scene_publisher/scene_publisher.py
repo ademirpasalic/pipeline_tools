@@ -24,12 +24,13 @@ except ImportError:
 
 class PublishRecord:
     """A single publish entry."""
-    def __init__(self, source, target, version, comment="", artist=""):
+    def __init__(self, source, target, version, comment="", artist="", asset=""):
         self.source = str(source)
         self.target = str(target)
         self.version = version
         self.comment = comment
         self.artist = artist or os.environ.get("USER") or os.environ.get("USERNAME") or getpass.getuser()
+        self.asset = asset or Path(source).stem
         self.timestamp = datetime.now().isoformat()
         self.status = "published"
 
@@ -46,12 +47,18 @@ class PublishDatabase:
 
     def _load(self):
         if self.db_path.exists():
-            with open(self.db_path) as f:
-                self.records = json.load(f)
+            try:
+                with open(self.db_path) as f:
+                    self.records = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                self.records = []
 
     def save(self):
-        with open(self.db_path, "w") as f:
-            json.dump(self.records, f, indent=2)
+        try:
+            with open(self.db_path, "w") as f:
+                json.dump(self.records, f, indent=2)
+        except OSError:
+            pass  # db write failures are non-fatal; records remain in memory
 
     def add(self, record):
         self.records.append(record.to_dict())
@@ -63,6 +70,11 @@ class ScenePublisher:
     """Core publish engine."""
 
     def __init__(self, publish_root="published"):
+        self.publish_root = Path(publish_root)
+        self.db = PublishDatabase(self.publish_root / "publish_history.json")
+
+    def set_publish_root(self, publish_root):
+        """Change publish root and reload the database atomically."""
         self.publish_root = Path(publish_root)
         self.db = PublishDatabase(self.publish_root / "publish_history.json")
 
@@ -95,23 +107,24 @@ class ScenePublisher:
         # Copy file
         shutil.copy2(source, target_path)
 
-        # Write sidecar metadata
+        # Create publish record first so artist resolution is consistent
+        record = PublishRecord(source, target_path, version_str, comment, artist, asset=asset_name)
+
+        # Write sidecar metadata using the resolved record fields
         meta = {
             "asset": asset_name,
             "version": version_str,
             "source": str(source.resolve()),
             "published": str(target_path),
-            "artist": artist or os.environ.get("USER", "unknown"),
-            "comment": comment,
-            "timestamp": datetime.now().isoformat(),
+            "artist": record.artist,
+            "comment": record.comment,
+            "timestamp": record.timestamp,
             "file_size": target_path.stat().st_size,
         }
         meta_path = target_dir / f"{asset_name}_{version_str}.json"
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
 
-        # Create publish record
-        record = PublishRecord(source, target_path, version_str, comment, artist)
         self.db.add(record)
         return record
 
@@ -206,8 +219,7 @@ class PublisherWindow(QtWidgets.QMainWindow):
         if not source:
             QtWidgets.QMessageBox.warning(self, "Missing Input", "Please select a source file before publishing.")
             return
-        self.publisher.publish_root = Path(self.root_input.text().strip())
-        self.publisher.db = PublishDatabase(self.publisher.publish_root / "publish_history.json")
+        self.publisher.set_publish_root(self.root_input.text().strip())
         try:
             record = self.publisher.publish(
                 source,
@@ -227,8 +239,8 @@ class PublisherWindow(QtWidgets.QMainWindow):
         self.history_table.clear()
         for r in reversed(self.publisher.db.records):
             item = QtWidgets.QTreeWidgetItem([
-                r["version"],
-                Path(r["source"]).stem,
+                r.get("version", ""),
+                r.get("asset") or Path(r.get("source", "")).stem,
                 r.get("artist", ""),
                 r.get("comment", ""),
                 r.get("timestamp", "")[:19],
