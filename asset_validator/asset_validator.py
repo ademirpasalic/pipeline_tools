@@ -246,11 +246,6 @@ class AssetValidator:
                     ValidationResult.FAIL, "naming",
                     f"Name doesn't match pattern: {name}", rel
                 ))
-            else:
-                self.results.append(ValidationResult(
-                    ValidationResult.PASS, "naming",
-                    f"Valid name: {name}", rel
-                ))
 
             # Length check
             if len(name) > max_len:
@@ -260,14 +255,15 @@ class AssetValidator:
                     f"Name exceeds {max_len} chars ({len(name)}): {name}", rel
                 ))
 
-            # Forbidden characters
-            for char in forbidden:
-                if char in name:
-                    logger.debug("Forbidden char %r in: %s", char, rel)
-                    self.results.append(ValidationResult(
-                        ValidationResult.FAIL, "naming",
-                        f"Forbidden character '{char}' in: {name}", rel
-                    ))
+            # Forbidden characters — collect all and emit one result per file
+            bad_chars = [c for c in forbidden if c in name]
+            if bad_chars:
+                chars_str = ", ".join(f"'{c}'" for c in bad_chars)
+                logger.debug("Forbidden chars %s in: %s", chars_str, rel)
+                self.results.append(ValidationResult(
+                    ValidationResult.FAIL, "naming",
+                    f"Forbidden characters ({chars_str}) in: {name}", rel
+                ))
 
             # File size
             if self.rules["metadata_checks"]["check_file_size"]:
@@ -410,7 +406,7 @@ class ValidatorWindow(QtWidgets.QMainWindow):
         warns  = sum(1 for r in results if r.status == ValidationResult.WARN)
         fails  = sum(1 for r in results if r.status == ValidationResult.FAIL)
         self.stats_label.setText(
-            f"✓ {passes} passed  ·  ⚠ {warns} warnings  ·  ✗ {fails} failures  ·  {len(results)} total checks"
+            f"✗ {fails} failures  ·  ⚠ {warns} warnings  ·  {len(results)} total checks"
         )
 
         for r in results:
