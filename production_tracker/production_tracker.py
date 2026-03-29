@@ -40,8 +40,21 @@ class TrackerDatabase:
 
     def _load(self):
         if self.path.exists():
-            with open(self.path) as f:
-                self.shots = json.load(f)
+            try:
+                with open(self.path) as f:
+                    self.shots = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                self.shots = []
+
+    def _next_id(self):
+        """Return the next unique string ID, safe across deletions."""
+        ids = []
+        for s in self.shots:
+            try:
+                ids.append(int(s["id"]))
+            except (ValueError, KeyError):
+                pass
+        return str(max(ids, default=0) + 1)
 
     def save(self):
         with open(self.path, "w") as f:
@@ -49,7 +62,7 @@ class TrackerDatabase:
 
     def add(self, name, department, artist="", status="Not Started", notes=""):
         shot = {
-            "id": str(len(self.shots) + 1),
+            "id": self._next_id(),
             "name": name,
             "department": department,
             "artist": artist,
@@ -68,7 +81,8 @@ class TrackerDatabase:
                 shot.update(kwargs)
                 shot["updated"] = datetime.now().isoformat()
                 self.save()
-                return
+                return True
+        return False
 
     def delete(self, shot_id):
         self.shots = [s for s in self.shots if s["id"] != str(shot_id)]
@@ -235,7 +249,27 @@ class TrackerWindow(QtWidgets.QMainWindow):
 
     def _update_status(self, shot_id, status):
         self.db.update(shot_id, status=status)
-        self._refresh()
+        # Update only the affected row's background color (avoid full table rebuild)
+        color_hex = STATUS_COLORS.get(status, "")
+        q_color = QtGui.QColor(color_hex) if color_hex else None
+        if q_color:
+            q_color.setAlpha(60)
+        for row in range(self.table.rowCount()):
+            name_item = self.table.item(row, 0)
+            if name_item and name_item.data(QtCore.Qt.UserRole) == shot_id:
+                for col in range(self.table.columnCount()):
+                    cell = self.table.item(row, col)
+                    if cell:
+                        cell.setBackground(q_color if q_color else QtGui.QBrush())
+                break
+        # Refresh stats bar only
+        stats = self.db.get_stats()
+        parts = [f"{stats['total']} total"]
+        for s in STATUSES:
+            count = stats.get(s, 0)
+            if count:
+                parts.append(f"{count} {s.lower()}")
+        self.stats_label.setText(" · ".join(parts))
 
     def _cell_changed(self, row, col):
         if col in (2, 4):  # artist or notes
