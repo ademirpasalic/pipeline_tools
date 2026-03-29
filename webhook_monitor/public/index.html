@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<title>Pipeline Webhook Monitor</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --bg2: #12121e;
+    --accent: #00e5a0;
+    --text: #e0e0e8;
+    --muted: #7a7a8e;
+    --border: #1e1e30;
+    --red: #ff4060;
+    --yellow: #ffc040;
+    --blue: #40a0ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Courier New', monospace; background: var(--bg); color: var(--text); }
+  
+  header {
+    padding: 1.5rem 2rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header h1 { font-size: 1rem; color: var(--accent); }
+  .status { font-size: 0.75rem; color: var(--muted); }
+  .status .dot { display: inline-block; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; margin-right: 6px; animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+
+  .stats-bar {
+    display: flex; gap: 2rem; padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.75rem;
+  }
+  .stat { color: var(--muted); }
+  .stat strong { color: var(--text); font-size: 1.1rem; margin-right: 4px; }
+  .stat.success strong { color: var(--accent); }
+  .stat.error strong { color: var(--red); }
+  .stat.warning strong { color: var(--yellow); }
+
+  .filters {
+    display: flex; gap: 0.5rem; padding: 1rem 2rem;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .filters input, .filters select {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); font-family: inherit; font-size: 0.75rem;
+    padding: 0.4rem 0.75rem; outline: none;
+  }
+  .filters input:focus, .filters select:focus { border-color: var(--accent); }
+  .filters input { flex: 1; min-width: 200px; }
+
+  .events { padding: 0 2rem 2rem; }
+  
+  .event {
+    display: grid;
+    grid-template-columns: 90px 100px 1fr auto;
+    gap: 1rem;
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.78rem;
+    align-items: start;
+    animation: fadeIn 0.3s ease;
+    transition: background 0.2s;
+  }
+  .event:hover { background: var(--bg2); }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+  
+  .event-time { color: var(--muted); font-size: 0.7rem; white-space: nowrap; }
+  .event-source { font-weight: bold; }
+  .event-name { color: var(--text); }
+  .event-data { color: var(--muted); font-size: 0.7rem; word-break: break-all; }
+  
+  .severity-badge {
+    font-size: 0.6rem; padding: 2px 8px; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap;
+  }
+  .severity-info { background: #40a0ff20; color: var(--blue); }
+  .severity-success { background: #00e5a020; color: var(--accent); }
+  .severity-warning { background: #ffc04020; color: var(--yellow); }
+  .severity-error { background: #ff406020; color: var(--red); }
+  
+  .empty { text-align: center; padding: 4rem 2rem; color: var(--muted); font-size: 0.85rem; }
+  
+  @media (max-width: 768px) {
+    .event { grid-template-columns: 1fr; gap: 0.25rem; }
+    .stats-bar { flex-wrap: wrap; gap: 1rem; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#x25B6; pipeline webhook monitor</h1>
+  <div class="status"><span class="dot"></span>listening</div>
+</header>
+
+<div class="stats-bar" id="stats">
+  <div class="stat"><strong id="s-total">0</strong> events</div>
+  <div class="stat success"><strong id="s-success">0</strong> success</div>
+  <div class="stat warning"><strong id="s-warning">0</strong> warnings</div>
+  <div class="stat error"><strong id="s-error">0</strong> errors</div>
+  <div class="stat"><strong id="s-rate">0</strong> /min</div>
+</div>
+
+<div class="filters">
+  <input type="text" id="f-search" placeholder="Search events..." />
+  <select id="f-severity">
+    <option value="">All severities</option>
+    <option value="info">Info</option>
+    <option value="success">Success</option>
+    <option value="warning">Warning</option>
+    <option value="error">Error</option>
+  </select>
+  <select id="f-source"><option value="">All sources</option></select>
+</div>
+
+<div class="events" id="events">
+  <div class="empty" id="empty">Waiting for webhook events...<br><br>
+    <span style="font-size:0.7rem; color: var(--muted);">
+      POST /api/webhook with { "source": "...", "event": "...", "data": {...} }
+    </span>
+  </div>
+</div>
+
+<script>
+  var events = [];
+  var sources = new Set();
+  
+  function formatTime(iso) {
+    var d = new Date(iso);
+    return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  }
+  
+  function renderEvent(e) {
+    var dataStr = Object.keys(e.data).length > 0 ? JSON.stringify(e.data) : '';
+    return '<div class="event">' +
+      '<div class="event-time">' + formatTime(e.timestamp) + '</div>' +
+      '<div class="event-source">' + e.source + '</div>' +
+      '<div><div class="event-name">' + e.event + '</div>' +
+        (dataStr ? '<div class="event-data">' + dataStr + '</div>' : '') +
+      '</div>' +
+      '<div class="severity-badge severity-' + e.severity + '">' + e.severity + '</div>' +
+    '</div>';
+  }
+  
+  function render() {
+    var search = document.getElementById('f-search').value.toLowerCase();
+    var severity = document.getElementById('f-severity').value;
+    var source = document.getElementById('f-source').value;
+    
+    var filtered = events.filter(function(e) {
+      if (severity && e.severity !== severity) return false;
+      if (source && e.source !== source) return false;
+      if (search) {
+        var s = (e.source + ' ' + e.event + ' ' + JSON.stringify(e.data)).toLowerCase();
+        if (s.indexOf(search) === -1) return false;
+      }
+      return true;
+    });
+    
+    var el = document.getElementById('events');
+    if (filtered.length === 0) {
+      el.innerHTML = '<div class="empty">No matching events</div>';
+    } else {
+      el.innerHTML = filtered.map(renderEvent).join('');
+    }
+  }
+  
+  function updateStats() {
+    fetch('/api/stats').then(function(r) { return r.json(); }).then(function(s) {
+      document.getElementById('s-total').textContent = s.total;
+      document.getElementById('s-success').textContent = s.bySeverity.success;
+      document.getElementById('s-warning').textContent = s.bySeverity.warning;
+      document.getElementById('s-error').textContent = s.bySeverity.error;
+      document.getElementById('s-rate').textContent = s.recentPerMinute;
+    });
+  }
+  
+  function updateSourceFilter() {
+    var select = document.getElementById('f-source');
+    var current = select.value;
+    select.innerHTML = '<option value="">All sources</option>';
+    sources.forEach(function(s) {
+      var opt = document.createElement('option');
+      opt.value = s; opt.textContent = s;
+      if (s === current) opt.selected = true;
+      select.appendChild(opt);
+    });
+  }
+  
+  // Server-Sent Events for real-time updates
+  var es = new EventSource('/api/stream');
+  es.onmessage = function(msg) {
+    var e = JSON.parse(msg.data);
+    events.unshift(e);
+    sources.add(e.source);
+    document.getElementById('empty').style.display = 'none';
+    updateSourceFilter();
+    updateStats();
+    render();
+  };
+  
+  document.getElementById('f-search').addEventListener('input', render);
+  document.getElementById('f-severity').addEventListener('change', render);
+  document.getElementById('f-source').addEventListener('change', render);
+  
+  // Load existing events
+  fetch('/api/events').then(function(r) { return r.json(); }).then(function(data) {
+    events = data;
+    data.forEach(function(e) { sources.add(e.source); });
+    if (events.length > 0) document.getElementById('empty').style.display = 'none';
+    updateSourceFilter();
+    updateStats();
+    render();
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+{
+  "projects": {
+    "example_project": {
+      "name": "Example Project",
+      "root": "/projects/example",
+      "env": {
+        "PROJECT_NAME": "example_project",
+        "PROJECT_ROOT": "/projects/example",
+        "ASSET_DIR": "/projects/example/assets",
+        "SHOT_DIR": "/projects/example/shots",
+        "CACHE_DIR": "/projects/example/cache"
+      }
+    }
+  },
+  "software": {
+    "maya_2024": {
+      "name": "Maya 2024",
+      "executable": "C:/Program Files/Autodesk/Maya2024/bin/maya.exe",
+      "icon": "maya",
+      "env": {
+        "MAYA_MODULE_PATH": "",
+        "MAYA_PLUG_IN_PATH": ""
+      }
+    },
+    "blender_4": {
+      "name": "Blender 4.5.7",
+      "executable": "C:/Program Files/Blender Foundation/Blender 4.5/blender.exe",
+      "icon": "blender",
+      "env": {}
+    },
+    "houdini_20": {
+      "name": "Houdini 20",
+      "executable": "C:/Program Files/Side Effects Software/Houdini 20.0/bin/houdini.exe",
+      "icon": "houdini",
+      "env": {}
+    },
+    "nuke_15": {
+      "name": "Nuke 15",
+      "executable": "C:/Program Files/Nuke15.0v1/Nuke15.0.exe",
+      "icon": "nuke",
+      "env": {}
+    }
+  }
+}
