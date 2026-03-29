@@ -27,7 +27,8 @@ class VideoConcatenator:
     def concatenate(video_paths, output_path, include_audio=True):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             for path in video_paths:
-                f.write(f"file '{path}'\n")
+                resolved = str(Path(path).resolve()).replace("'", "'\\''")
+                f.write(f"file '{resolved}'\n")
             list_file = f.name
 
         audio_args = [] if include_audio else ["-an"]
@@ -40,13 +41,16 @@ class VideoConcatenator:
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
-            os.unlink(list_file)
             if result.returncode == 0:
                 return True, f"Created: {output_path}"
             return False, result.stderr[:300]
         except FileNotFoundError:
-            os.unlink(list_file)
             return False, "ffmpeg not found in PATH"
+        finally:
+            try:
+                os.unlink(list_file)
+            except OSError:
+                pass
 
 
 class ConcatWindow(QtWidgets.QMainWindow):
@@ -96,6 +100,8 @@ class ConcatWindow(QtWidgets.QMainWindow):
         # Video list
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setDragDropMode(QtWidgets.QListWidget.InternalMove)
+        self.list_widget.setDefaultDropAction(QtCore.Qt.MoveAction)
         layout.addWidget(self.list_widget, 1)
 
         # Options
@@ -133,8 +139,8 @@ class ConcatWindow(QtWidgets.QMainWindow):
         self.status_label.setText(f"{len(self.video_paths)} videos in queue")
 
     def _remove_selected(self):
-        for item in self.list_widget.selectedItems():
-            row = self.list_widget.row(item)
+        rows = sorted({self.list_widget.row(item) for item in self.list_widget.selectedItems()}, reverse=True)
+        for row in rows:
             self.list_widget.takeItem(row)
             self.video_paths.pop(row)
         self.status_label.setText(f"{len(self.video_paths)} videos in queue")
