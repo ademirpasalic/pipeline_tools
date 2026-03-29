@@ -47,8 +47,9 @@ class TrackerDatabase:
         with open(self.path, "w") as f:
             json.dump(self.shots, f, indent=2)
 
-    def add_shot(self, name, department, artist="", status="Not Started", notes=""):
+    def add(self, name, department, artist="", status="Not Started", notes=""):
         shot = {
+            "id": str(len(self.shots) + 1),
             "name": name,
             "department": department,
             "artist": artist,
@@ -61,25 +62,23 @@ class TrackerDatabase:
         self.save()
         return shot
 
-    def update_shot(self, index, **kwargs):
-        if 0 <= index < len(self.shots):
-            self.shots[index].update(kwargs)
-            self.shots[index]["updated"] = datetime.now().isoformat()
-            self.save()
+    def update(self, shot_id, **kwargs):
+        for shot in self.shots:
+            if shot["id"] == str(shot_id):
+                shot.update(kwargs)
+                shot["updated"] = datetime.now().isoformat()
+                self.save()
+                return
 
-    def delete_shot(self, index):
-        if 0 <= index < len(self.shots):
-            self.shots.pop(index)
-            self.save()
+    def delete(self, shot_id):
+        self.shots = [s for s in self.shots if s["id"] != str(shot_id)]
+        self.save()
 
     def get_stats(self):
-        total = len(self.shots)
-        by_status = {}
-        by_dept = {}
+        stats = {"total": len(self.shots)}
         for s in self.shots:
-            by_status[s["status"]] = by_status.get(s["status"], 0) + 1
-            by_dept[s["department"]] = by_dept.get(s["department"], 0) + 1
-        return {"total": total, "by_status": by_status, "by_department": by_dept}
+            stats[s["status"]] = stats.get(s["status"], 0) + 1
+        return stats
 
 
 class TrackerWindow(QtWidgets.QMainWindow):
@@ -166,7 +165,7 @@ class TrackerWindow(QtWidgets.QMainWindow):
         name = self.name_input.text().strip()
         if not name:
             return
-        self.db.add_shot(
+        self.db.add(
             name,
             self.dept_combo.currentText(),
             self.artist_input.text().strip(),
@@ -178,9 +177,9 @@ class TrackerWindow(QtWidgets.QMainWindow):
     def _delete_selected(self):
         rows = sorted(set(i.row() for i in self.table.selectedIndexes()), reverse=True)
         for row in rows:
-            real_index = self.table.item(row, 0).data(QtCore.Qt.UserRole)
-            if real_index is not None:
-                self.db.delete_shot(real_index)
+            shot_id = self.table.item(row, 0).data(QtCore.Qt.UserRole)
+            if shot_id is not None:
+                self.db.delete(shot_id)
         self._refresh()
 
     def _refresh(self):
@@ -200,7 +199,7 @@ class TrackerWindow(QtWidgets.QMainWindow):
             self.table.insertRow(row)
 
             name_item = QtWidgets.QTableWidgetItem(shot["name"])
-            name_item.setData(QtCore.Qt.UserRole, i)
+            name_item.setData(QtCore.Qt.UserRole, shot["id"])
             self.table.setItem(row, 0, name_item)
             self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(shot["department"]))
             self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(shot["artist"]))
@@ -209,7 +208,7 @@ class TrackerWindow(QtWidgets.QMainWindow):
             status_combo = QtWidgets.QComboBox()
             status_combo.addItems(STATUSES)
             status_combo.setCurrentText(shot["status"])
-            status_combo.currentTextChanged.connect(lambda text, idx=i: self._update_status(idx, text))
+            status_combo.currentTextChanged.connect(lambda text, sid=shot["id"]: self._update_status(sid, text))
             self.table.setCellWidget(row, 3, status_combo)
 
             self.table.setItem(row, 4, QtWidgets.QTableWidgetItem(shot.get("notes", "")))
@@ -228,23 +227,23 @@ class TrackerWindow(QtWidgets.QMainWindow):
         stats = self.db.get_stats()
         parts = [f"{stats['total']} total"]
         for status in STATUSES:
-            count = stats["by_status"].get(status, 0)
+            count = stats.get(status, 0)
             if count:
                 parts.append(f"{count} {status.lower()}")
         self.stats_label.setText(" · ".join(parts))
         self.table.blockSignals(False)
 
-    def _update_status(self, index, status):
-        self.db.update_shot(index, status=status)
+    def _update_status(self, shot_id, status):
+        self.db.update(shot_id, status=status)
         self._refresh()
 
     def _cell_changed(self, row, col):
         if col in (2, 4):  # artist or notes
-            real_index = self.table.item(row, 0).data(QtCore.Qt.UserRole)
-            if real_index is not None:
+            shot_id = self.table.item(row, 0).data(QtCore.Qt.UserRole)
+            if shot_id is not None:
                 field = "artist" if col == 2 else "notes"
                 value = self.table.item(row, col).text()
-                self.db.update_shot(real_index, **{field: value})
+                self.db.update(shot_id, **{field: value})
 
     def _apply_style(self):
         self.setStyleSheet("""
