@@ -56,9 +56,12 @@ python video_concat/video_concat.py
 ```bash
 cd webhook_monitor
 npm run build   # compile TypeScript
-npm start       # serve on http://localhost:3000
+npm start       # serve on http://localhost:3000 (keeps running)
 
-# Send a test event
+# In a second terminal, send 18 sample events
+npm run demo
+
+# Or send a single test event (bash)
 curl -X POST http://localhost:3000/api/webhook \
   -H "Content-Type: application/json" \
   -d '{"source": "shotgrid", "event": "publish.complete", "data": {"asset": "hero_rig_v012"}}'
